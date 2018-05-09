@@ -12,7 +12,7 @@ Get metrics from all your containers running in ECS Fargate:
 ### Installation
 
 Install the `dd-check-ecs_fargate` package manually or with your favorite configuration manager.
-Additional details are available in our [AWS Fargate guide](https://docs.datadoghq.com/guides/awsfargate/).
+Additional details are available in our [AWS Fargate guide](https://docs.datadoghq.com/integrations/ecs_fargate/).
 
 ### Configuration
 
