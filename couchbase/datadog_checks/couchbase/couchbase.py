@@ -24,6 +24,8 @@ class Couchbase(AgentCheck):
     http://docs.couchbase.com/couchbase-manual-2.0/#using-the-rest-api
     """
     SERVICE_CHECK_NAME = 'couchbase.can_connect'
+    NODE_CLUSTER_SERVICE_CHECK_NAME = 'couchbase.by_node.cluster_membership'
+    NODE_HEALTH_SERVICE_CHECK_NAME = 'couchbase.by_node.health'
 
     # Selected metrics to send amongst all the bucket stats, after name normalization
     BUCKET_STATS = set([
@@ -232,7 +234,22 @@ class Couchbase(AgentCheck):
 
     seconds_value_pattern = re.compile('(\d+(\.\d+)?)(\D+)')
 
+    NODE_MEMBERSHIP_TRANSLATION = {
+        'active': AgentCheck.OK,
+        'inactiveAdded': AgentCheck.WARNING,
+        'activeFailed': AgentCheck.CRITICAL,
+        None: AgentCheck.UNKNOWN
+    }
+
+    NODE_HEALTH_TRANSLATION = {
+        'healthy': AgentCheck.OK,
+        'warmup': AgentCheck.OK,
+        'unhealthy': AgentCheck.CRITICAL,
+        None: AgentCheck.UNKNOWN
+    }
+
     def _create_metrics(self, data, tags=None):
+        # Get storage metrics
         storage_totals = data['stats']['storageTotals']
         for key, storage_type in storage_totals.items():
             for metric_name, val in storage_type.items():
@@ -240,24 +257,42 @@ class Couchbase(AgentCheck):
                     metric_name = '.'.join(['couchbase', key, self.camel_case_to_joined_lower(metric_name)])
                     self.gauge(metric_name, val, tags=tags)
 
+        # Get bucket metrics
         for bucket_name, bucket_stats in data['buckets'].items():
+            metric_tags = list(tags)
+            metric_tags.extend(('bucket:{}'.format(bucket_name), 'device_name:{}'.format(bucket_name)))
             for metric_name, val in bucket_stats.items():
                 if val is not None:
                     norm_metric_name = self.camel_case_to_joined_lower(metric_name)
                     if norm_metric_name in self.BUCKET_STATS:
                         full_metric_name = '.'.join(['couchbase', 'by_bucket', norm_metric_name])
-                        metric_tags = list(tags)
-                        metric_tags.append('bucket:%s' % bucket_name)
-                        self.gauge(full_metric_name, val[0], tags=metric_tags, device_name=bucket_name)
+                        self.gauge(full_metric_name, val[0], tags=metric_tags)
 
+        # Get node metrics
         for node_name, node_stats in data['nodes'].items():
+            metric_tags = list(tags)
+            metric_tags.extend(('node:{}'.format(node_name), 'device_name:{}'.format(node_name)))
             for metric_name, val in node_stats['interestingStats'].items():
                 if val is not None:
                     metric_name = '.'.join(['couchbase', 'by_node', self.camel_case_to_joined_lower(metric_name)])
-                    metric_tags = list(tags)
-                    metric_tags.append('node:%s' % node_name)
-                    self.gauge(metric_name, val, tags=metric_tags, device_name=node_name)
+                    self.gauge(metric_name, val, tags=metric_tags)
 
+            # Tags for service check
+            service_check_tags = list(tags)
+            service_check_tags.extend(('node:{}'.format(node_name), 'device_name:{}'.format(node_name)))
+
+            # Get the membership status of the node
+            cluster_membership = node_stats.get('clusterMembership', None)
+            membership_status = self.NODE_MEMBERSHIP_TRANSLATION.get(cluster_membership, AgentCheck.UNKNOWN)
+            self.service_check(self.NODE_CLUSTER_SERVICE_CHECK_NAME, membership_status,
+                               tags=service_check_tags)
+
+            # Get the health status of the node
+            health = node_stats.get('status', None)
+            health_status = self.NODE_HEALTH_TRANSLATION.get(health, AgentCheck.UNKNOWN)
+            self.service_check(self.NODE_HEALTH_SERVICE_CHECK_NAME, health_status, tags=service_check_tags)
+
+        # Get query metrics
         for metric_name, val in data['query'].items():
             if val is not None:
                 # for query times, the unit is part of the value, we need to extract it
